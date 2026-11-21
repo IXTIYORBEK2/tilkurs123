@@ -1,19 +1,13 @@
 
 import mysql from "mysql2/promise";
 
-const pool = mysql.createPool({
-    host: process.env.TIDB_HOST,
-    port: Number(process.env.TIDB_PORT) || 4000,
-    user: process.env.TIDB_USER,
-    password: process.env.TIDB_PASSWORD,
-    database: process.env.TIDB_DATABASE,
-    ssl: {
-        minVersion: "TLSv1.2"
-    },
-    waitForConnections: true,
-    connectionLimit: 5,
-    queueLimit: 0
-});
+const requiredVars = [
+    "TIDB_HOST",
+    "TIDB_PORT",
+    "TIDB_USER",
+    "TIDB_PASSWORD",
+    "TIDB_DATABASE"
+];
 
 function response(data, status = 200) {
     return new Response(JSON.stringify(data), {
@@ -24,11 +18,50 @@ function response(data, status = 200) {
     });
 }
 
+let pool;
+
+function getPool() {
+    if (!pool) {
+        pool = mysql.createPool({
+            host: process.env.TIDB_HOST,
+            port: Number(process.env.TIDB_PORT) || 4000,
+            user: process.env.TIDB_USER,
+            password: process.env.TIDB_PASSWORD,
+            database: process.env.TIDB_DATABASE,
+            ssl: {
+                minVersion: "TLSv1.2"
+            },
+            waitForConnections: true,
+            connectionLimit: 5,
+            queueLimit: 0
+        });
+    }
+
+    return pool;
+}
+
 export default async (request) => {
     try {
+        // Environment variables tekshiruvi
+        const missingVars = requiredVars.filter(
+            key => !process.env[key]?.trim()
+        );
+
+        if (missingVars.length > 0) {
+            console.error("Missing environment variables:", missingVars);
+
+            return response({
+                success: false,
+                message: "Environment variables topilmadi",
+                missing: missingVars
+            }, 500);
+        }
+
         const url = new URL(request.url);
 
-        let pathname = url.pathname.replace(
+        let pathname = url.pathname;
+
+        pathname = pathname.replace(
             /^\/\.netlify\/functions\/api/,
             ""
         );
@@ -39,24 +72,16 @@ export default async (request) => {
 
         pathname = pathname.replace(/\/+$/, "") || "/";
 
-        if (
-            !process.env.TIDB_HOST ||
-            !process.env.TIDB_USER ||
-            !process.env.TIDB_PASSWORD ||
-            !process.env.TIDB_DATABASE
-        ) {
-            return response({
-                success: false,
-                message: "Database environment variables sozlanmagan"
-            }, 500);
-        }
+        const db = getPool();
 
+        // Barcha eslatmalarni olish
         if (pathname === "/notes" && request.method === "GET") {
-            const [notes] = await pool.execute(
+            const [notes] = await db.execute(
                 `SELECT id, name, description,
                  created_at AS createdAt,
                  updated_at AS updatedAt
-                 FROM notes ORDER BY id DESC`
+                 FROM notes
+                 ORDER BY id DESC`
             );
 
             return response({
@@ -66,6 +91,7 @@ export default async (request) => {
             });
         }
 
+        // Yangi eslatma qo'shish
         if (pathname === "/notes" && request.method === "POST") {
             const body = await request.json();
 
@@ -91,16 +117,18 @@ export default async (request) => {
                 }, 400);
             }
 
-            const [result] = await pool.execute(
-                "INSERT INTO notes (name, description) VALUES (?, ?)",
+            const [result] = await db.execute(
+                `INSERT INTO notes (name, description)
+                 VALUES (?, ?)`,
                 [name, description]
             );
 
-            const [rows] = await pool.execute(
+            const [rows] = await db.execute(
                 `SELECT id, name, description,
                  created_at AS createdAt,
                  updated_at AS updatedAt
-                 FROM notes WHERE id = ?`,
+                 FROM notes
+                 WHERE id = ?`,
                 [result.insertId]
             );
 
@@ -111,8 +139,10 @@ export default async (request) => {
             }, 201);
         }
 
+        // ID bo'yicha manzilni aniqlash
         const match = pathname.match(/^\/notes\/(\d+)$/);
 
+        // Eslatmani yangilash
         if (match && request.method === "PUT") {
             const id = Number(match[1]);
             const body = await request.json();
@@ -140,7 +170,7 @@ export default async (request) => {
                 }, 400);
             }
 
-            const [result] = await pool.execute(
+            const [result] = await db.execute(
                 `UPDATE notes
                  SET name = ?, description = ?
                  WHERE id = ?`,
@@ -154,11 +184,12 @@ export default async (request) => {
                 }, 404);
             }
 
-            const [rows] = await pool.execute(
+            const [rows] = await db.execute(
                 `SELECT id, name, description,
                  created_at AS createdAt,
                  updated_at AS updatedAt
-                 FROM notes WHERE id = ?`,
+                 FROM notes
+                 WHERE id = ?`,
                 [id]
             );
 
@@ -169,6 +200,7 @@ export default async (request) => {
             });
         }
 
+        // Eslatmani o'chirish
         if (match && request.method === "DELETE") {
             const id = Number(match[1]);
 
@@ -179,7 +211,7 @@ export default async (request) => {
                 }, 400);
             }
 
-            const [result] = await pool.execute(
+            const [result] = await db.execute(
                 "DELETE FROM notes WHERE id = ?",
                 [id]
             );
